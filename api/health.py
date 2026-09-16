@@ -4,6 +4,8 @@ from PIL import Image
 import io
 import numpy as np
 
+app = None
+
 
 def handler(request):
     """Minimal health/diagnostic endpoint."""
