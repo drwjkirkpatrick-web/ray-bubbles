@@ -9,5 +9,8 @@
     { "src": "/api/render", "dest": "api/render.py" },
     { "src": "/api/health", "dest": "api/health.py" },
     { "src": "/(.*)", "dest": "/web/$1" }
+  ],
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/$1.py" }
   ]
 }

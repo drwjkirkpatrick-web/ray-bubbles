@@ -1,35 +1,36 @@
+"""
+WSGI entrypoint for Vercel.
+Vercel expects a top-level app/environ/start_response callable or ASGI.
+This module wraps the Vercel handler into a WSGI app.
+"""
 import base64
 import json
 from urllib.parse import parse_qs
 from tracer import Camera, Scene, render
 from bubbles import Bubble
 import numpy as np
+from PIL import Image
+import io
 
 MAX_WIDTH = 320
 MAX_HEIGHT = 240
 MAX_SAMPLES = 16
 
 
-app = None  # Vercel entrypoint is the handler() function
+app = None  # placeholder to satisfy Vercel discovery if it checks
 
 
-def handler(request):
-    """Vercel serverless render endpoint (CPU fallback)."""
-    if request.method == "OPTIONS":
-        return {
-            "statusCode": 204,
-            "headers": {
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type",
-            },
-        }
-
+def _do_render(environ):
+    method = environ.get("REQUEST_METHOD", "GET")
     try:
-        if request.method == "GET":
-            params = request.args or {}
+        if method == "GET":
+            params = {
+                k: v[0] if isinstance(v, list) else v
+                for k, v in parse_qs(environ.get("QUERY_STRING", "")).items()
+            }
         else:
-            body = request.body or b"{}"
+            length = int(environ.get("CONTENT_LENGTH", 0))
+            body = environ["wsgi.input"].read(length) if length else b"{}"
             params = json.loads(body.decode()) if body else {}
 
         width = min(int(params.get("width", 160)), MAX_WIDTH)
@@ -38,7 +39,11 @@ def handler(request):
         film_thickness = float(params.get("film_thickness", 450.0))
         thickness_var = float(params.get("thickness_var", 40.0))
         bubble_radius = float(params.get("bubble_radius", 1.0))
-        three = bool(params.get("three", True))
+        three = params.get("three", True)
+        if isinstance(three, str):
+            three = three.lower() in ("true", "1", "yes", "on")
+        else:
+            three = bool(three)
 
         common = dict(base_thickness_nm=film_thickness, thickness_variation_nm=thickness_var)
         if three:
@@ -63,26 +68,39 @@ def handler(request):
         scene = Scene(bubbles=bubbles)
         img = render(scene, camera, width, height, samples=samples, seed=1)
         uint8 = (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
-        from PIL import Image
         pil = Image.fromarray(uint8)
-        import io
         buf = io.BytesIO()
         pil.save(buf, format="PNG")
         png_bytes = buf.getvalue()
 
         return {
-            "statusCode": 200,
-            "headers": {
-                "Content-Type": "image/png",
-                "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "public, max-age=60",
-            },
-            "body": base64.b64encode(png_bytes).decode("utf-8"),
-            "isBase64Encoded": True,
+            "status": 200,
+            "headers": [
+                ("Content-Type", "image/png"),
+                ("Access-Control-Allow-Origin", "*"),
+                ("Cache-Control", "public, max-age=60"),
+            ],
+            "body": png_bytes,
+            "isBase64": False,
         }
     except Exception as e:
+        err = json.dumps({"error": str(e)})
         return {
-            "statusCode": 500,
-            "headers": {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"},
-            "body": json.dumps({"error": str(e)}),
+            "status": 500,
+            "headers": [
+                ("Content-Type", "application/json"),
+                ("Access-Control-Allow-Origin", "*"),
+            ],
+            "body": err.encode(),
+            "isBase64": False,
         }
+
+
+def application(environ, start_response):
+    result = _do_render(environ)
+    start_response(f"{result['status']} OK", result["headers"])
+    return [result["body"]]
+
+
+# Some Vercel versions look for `app`
+app = application

@@ -2,42 +2,42 @@ import json
 import base64
 from PIL import Image
 import io
-import numpy as np
 
-app = None
+app = None  # placeholder to satisfy Vercel discovery
 
 
-def handler(request):
-    """Minimal health/diagnostic endpoint."""
-    if request.method == "OPTIONS":
-        return {
-            "statusCode": 204,
-            "headers": {
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type",
-            },
-        }
+def _health_png():
+    img = Image.new("RGB", (100, 100), color=(255, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
+
+def _do_health(environ):
     try:
-        # Create a tiny red PNG
-        img = Image.new("RGB", (100, 100), color=(255, 0, 0))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        png = buf.getvalue()
+        png = _health_png()
         return {
-            "statusCode": 200,
-            "headers": {
-                "Content-Type": "image/png",
-                "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "no-cache",
-            },
-            "body": base64.b64encode(png).decode("utf-8"),
-            "isBase64Encoded": True,
+            "status": 200,
+            "headers": [
+                ("Content-Type", "image/png"),
+                ("Access-Control-Allow-Origin", "*"),
+                ("Cache-Control", "no-cache"),
+            ],
+            "body": png,
         }
     except Exception as e:
+        err = json.dumps({"error": str(e)})
         return {
-            "statusCode": 500,
-            "headers": {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"},
-            "body": json.dumps({"error": str(e), "trace": __import__("traceback").format_exc()}),
+            "status": 500,
+            "headers": [("Content-Type", "application/json"), ("Access-Control-Allow-Origin", "*")],
+            "body": err.encode(),
         }
+
+
+def application(environ, start_response):
+    result = _do_health(environ)
+    start_response(f"{result['status']} OK", result["headers"])
+    return [result["body"]]
+
+
+app = application
