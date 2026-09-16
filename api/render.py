@@ -10,6 +10,9 @@ MAX_HEIGHT = 240
 MAX_SAMPLES = 16
 
 
+app = None  # Vercel entrypoint is the handler() function
+
+
 def handler(request):
     """Vercel serverless render endpoint (CPU fallback)."""
     if request.method == "OPTIONS":
