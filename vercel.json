@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "routes": [
+    { "src": "/api/render", "dest": "/api/render.py" },
+    { "src": "/(.*)", "dest": "/web/$1" }
+  ],
+  "functions": {
+    "api/render.py": {
+      "includeFiles": "../bubbles.py,../tracer.py,../spectrum.py,../render.py"
+    }
+  }
+}

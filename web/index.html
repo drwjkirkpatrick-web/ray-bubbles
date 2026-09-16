@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ray Bubbles</title>
+  <style>
+    :root {
+      --bg: #0b0d12;
+      --panel: #151821;
+      --text: #e8ecf1;
+      --muted: #8f98a8;
+      --accent: #5ca8ff;
+      --border: #2a2f3a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      min-height: 100vh;
+    }
+    aside {
+      width: 320px;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      overflow-y: auto;
+    }
+    h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: -0.3px; }
+    p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+    input, select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    input[type="checkbox"] { width: 18px; height: 18px; }
+    .row { display: flex; align-items: center; gap: 10px; }
+    .row label { flex-direction: row; align-items: center; }
+    button {
+      background: var(--accent);
+      color: #04101f;
+      border: none;
+      padding: 12px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 15px;
+      margin-top: 8px;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    main {
+      flex: 1;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 16px;
+    }
+    #stage {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      max-width: 100%;
+    }
+    #stage img {
+      max-width: 100%;
+      border-radius: 8px;
+      display: block;
+    }
+    #status {
+      color: var(--muted);
+      font-size: 13px;
+      min-height: 18px;
+    }
+    .note {
+      background: rgba(92, 168, 255, 0.08);
+      border-left: 3px solid var(--accent);
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text);
+    }
+  </style>
+</head>
+<body>
+  <aside>
+    <div>
+      <h1>Ray Bubbles</h1>
+      <p>GPU-accelerated thin-film soap-bubble ray tracer.</p>
+    </div>
+
+    <div class="note">
+      Set Backend URL to your Jetson (e.g. <code>http://your-jetson:5000/render</code>) to use the real GPU renderer.
+      Leave blank to use the Vercel CPU fallback (small previews only).
+    </div>
+
+    <label>
+      Backend URL
+      <input id="backend" type="url" placeholder="http://localhost:5000/render">
+    </label>
+
+    <label>
+      Image width
+      <input id="width" type="number" value="960" min="80" max="1920" step="10">
+    </label>
+
+    <label>
+      Image height
+      <input id="height" type="number" value="540" min="60" max="1080" step="10">
+    </label>
+
+    <label>
+      Samples per pixel
+      <input id="samples" type="number" value="64" min="1" max="512">
+    </label>
+
+    <label>
+      Film thickness (nm)
+      <input id="film" type="number" value="450" min="100" max="1000" step="10">
+    </label>
+
+    <label>
+      Thickness variation (nm)
+      <input id="var" type="number" value="40" min="0" max="200" step="5">
+    </label>
+
+    <label>
+      Bubble radius
+      <input id="radius" type="number" value="1.0" min="0.2" max="3.0" step="0.1">
+    </label>
+
+    <div class="row">
+      <label><input id="three" type="checkbox" checked> Three bubbles</label>
+    </div>
+
+    <div class="row">
+      <label><input id="gpu" type="checkbox" checked> Use GPU backend</label>
+    </div>
+
+    <button id="renderBtn">Render</button>
+    <div id="status">Ready</div>
+  </aside>
+
+  <main>
+    <div id="stage">
+      <img id="result" src="" alt="Rendered bubbles will appear here" style="display:none;">
+      <div id="placeholder" style="color:var(--muted); padding: 40px 60px; text-align:center;">Click Render to generate an image</div>
+    </div>
+  </main>
+
+  <script>
+    const backendInput = document.getElementById('backend');
+    const widthInput = document.getElementById('width');
+    const heightInput = document.getElementById('height');
+    const samplesInput = document.getElementById('samples');
+    const filmInput = document.getElementById('film');
+    const varInput = document.getElementById('var');
+    const radiusInput = document.getElementById('radius');
+    const threeInput = document.getElementById('three');
+    const gpuInput = document.getElementById('gpu');
+    const renderBtn = document.getElementById('renderBtn');
+    const status = document.getElementById('status');
+    const result = document.getElementById('result');
+    const placeholder = document.getElementById('placeholder');
+
+    function save() {
+      localStorage.setItem('raybubbles_backend', backendInput.value);
+    }
+    function load() {
+      const v = localStorage.getItem('raybubbles_backend');
+      if (v) backendInput.value = v;
+    }
+    load();
+    backendInput.addEventListener('change', save);
+
+    renderBtn.addEventListener('click', async () => {
+      const backend = backendInput.value.trim();
+      const useGpu = gpuInput.checked && backend;
+      const url = useGpu ? backend : '/api/render';
+      const body = {
+        width: parseInt(widthInput.value),
+        height: parseInt(heightInput.value),
+        samples: parseInt(samplesInput.value),
+        film_thickness: parseFloat(filmInput.value),
+        thickness_var: parseFloat(varInput.value),
+        bubble_radius: parseFloat(radiusInput.value),
+        three: threeInput.checked,
+        gpu: useGpu,
+      };
+
+      renderBtn.disabled = true;
+      status.textContent = useGpu ? 'Rendering on Jetson GPU...' : 'Rendering on Vercel CPU fallback...';
+
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const blob = await resp.blob();
+        result.src = URL.createObjectURL(blob);
+        result.style.display = 'block';
+        placeholder.style.display = 'none';
+        status.textContent = `Done (${body.width}x${body.height}, ${body.samples} samples)`;
+      } catch (err) {
+        status.textContent = 'Error: ' + err.message;
+      } finally {
+        renderBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
