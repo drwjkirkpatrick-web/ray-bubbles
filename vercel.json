@@ -2,10 +2,12 @@
   "version": 2,
   "builds": [
     { "src": "api/render.py", "use": "@vercel/python" },
+    { "src": "api/health.py", "use": "@vercel/python" },
     { "src": "web/**", "use": "@vercel/static" }
   ],
   "routes": [
     { "src": "/api/render", "dest": "api/render.py" },
+    { "src": "/api/health", "dest": "api/health.py" },
     { "src": "/(.*)", "dest": "/web/$1" }
   ]
 }
