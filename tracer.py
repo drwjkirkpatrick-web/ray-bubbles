@@ -122,11 +122,13 @@ class Scene:
     def ground_intersect(self, origins: np.ndarray, directions: np.ndarray) -> np.ndarray:
         """Distance to the y=ground_y plane, only for downward rays."""
         dy = directions[:, 1]
-        t = np.where(
-            dy < -1e-6,
-            (self.ground_y - origins[:, 1]) / dy,
-            np.inf
-        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            safe_dy = np.where(np.abs(dy) > 1e-6, dy, np.inf)
+            t = np.where(
+                dy < -1e-6,
+                (self.ground_y - origins[:, 1]) / safe_dy,
+                np.inf,
+            )
         return np.where(t > 0, t, np.inf)
 
     def bubble_shadow(self, points: np.ndarray, to_sun: np.ndarray) -> np.ndarray:

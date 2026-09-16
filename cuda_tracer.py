@@ -363,7 +363,8 @@ def _render_kernel(
                     caustic = b0 * sdir0 + b1 * sdir1 + b2 * sdir2
                     if caustic < 0.0:
                         caustic = 0.0
-                    for _ in range(8):
+                    # Raise to 8th power (3 squarings).
+                    for _ in range(3):
                         caustic = caustic * caustic
                     if in_light:
                         for i in range(8):
@@ -404,9 +405,9 @@ def _render_kernel(
     b_lin = xyz_to_rgb[2, 0] * X + xyz_to_rgb[2, 1] * Y + xyz_to_rgb[2, 2] * Z
 
     # Exposure scale to match the CPU renderer's output level.
-    r_lin *= 40.0
-    g_lin *= 40.0
-    b_lin *= 40.0
+    r_lin *= 800.0
+    g_lin *= 800.0
+    b_lin *= 800.0
 
     gr = r_lin * 255.0
     gg = g_lin * 255.0
