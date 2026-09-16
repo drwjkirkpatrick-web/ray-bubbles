@@ -8,7 +8,7 @@ single-bounce shadow/ground bounce to fake the soft caustic look that soap
 bubbles have.
 """
 import numpy as np
-from spectrum import WAVELENGTHS, spectrum_to_rgb, gamma_encode
+from spectrum import WAVELENGTHS, N_WAVELENGTHS, spectrum_to_rgb, gamma_encode, apply_tone_map
 from bubbles import Bubble, thin_film_reflection, refract
 
 
@@ -86,16 +86,70 @@ class Camera:
 class Scene:
     """Scene holds geometry and lighting."""
 
-    def __init__(self, bubbles, sun_dir: np.ndarray = None, ground_y: float = -2.0):
+    def __init__(
+        self,
+        bubbles,
+        sun_dir: np.ndarray = None,
+        ground_y: float = -2.0,
+        background: str = "sky",
+        sun_power: float = 1.0,
+        rim_power: float = 0.6,
+        rim_dir: np.ndarray = None,
+        ground_gloss: float = 0.0,
+        ground_reflectivity: float = 0.0,
+        exposure: float = 1.0,
+    ):
         self.bubbles = bubbles if isinstance(bubbles, list) else [bubbles]
         if sun_dir is None:
             sun_dir = np.array([0.3, 0.8, -0.5], dtype=np.float32)
+        if rim_dir is None:
+            rim_dir = np.array([-0.5, 0.2, -0.8], dtype=np.float32)
         self.sun_dir = sun_dir / np.linalg.norm(sun_dir)
         self.ground_y = float(ground_y)
-        # Sky radiance: deep blue zenith, lighter blue/white horizon.
-        self.sky = np.array([0.25, 0.40, 0.65, 0.90, 1.05, 1.10, 1.05, 1.00], dtype=np.float32)
+        self.background = background
+        self.sun_power = float(sun_power)
+        self.rim_power = float(rim_power)
+        self.rim_dir = rim_dir / np.linalg.norm(rim_dir)
+        self.ground_gloss = float(ground_gloss)
+        self.ground_reflectivity = float(ground_reflectivity)
+        self.exposure = float(exposure)
+
+        # Sky radiance presets.
+        if background == "studio":
+            # Dark low-key studio: very dark blue-grey zenith, slightly lighter horizon.
+            self.zenith = np.array([0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.03, 0.03,
+                                    0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03], dtype=np.float32)
+            self.horizon = np.array([0.04, 0.04, 0.05, 0.06, 0.07, 0.07, 0.07, 0.07,
+                                     0.07, 0.07, 0.07, 0.06, 0.06, 0.05, 0.05, 0.05], dtype=np.float32)
+        elif background == "night":
+            # Night sky with a faint milky-way-ish horizon.
+            self.zenith = np.array([0.005, 0.005, 0.01, 0.01, 0.015, 0.015, 0.02, 0.02,
+                                    0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02], dtype=np.float32)
+            self.horizon = np.array([0.02, 0.02, 0.03, 0.04, 0.05, 0.05, 0.05, 0.05,
+                                     0.05, 0.05, 0.05, 0.04, 0.04, 0.03, 0.03, 0.03], dtype=np.float32)
+        else:
+            # Day sky: deep blue zenith, lighter horizon.
+            self.zenith = np.array([0.05, 0.08, 0.15, 0.25, 0.30, 0.32, 0.30, 0.28,
+                                    0.25, 0.22, 0.20, 0.18, 0.16, 0.14, 0.12, 0.10], dtype=np.float32)
+            self.horizon = np.array([0.50, 0.60, 0.75, 0.90, 0.95, 0.95, 0.90, 0.85,
+                                     0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50, 0.45], dtype=np.float32)
+
         # Sun radiance: bright warm-ish spectrum.
-        self.sun = np.array([2.0, 2.1, 2.3, 2.5, 2.6, 2.5, 2.3, 2.2], dtype=np.float32)
+        self.sun = np.array([2.0, 2.1, 2.3, 2.5, 2.6, 2.5, 2.3, 2.2,
+                             2.1, 2.0, 1.9, 1.8, 1.7, 1.6, 1.5, 1.4], dtype=np.float32)
+
+    def sky_radiance(self, direction: np.ndarray) -> np.ndarray:
+        """Return spectral radiance of the sky in a given direction."""
+        cos_sun = np.maximum(np.sum(direction * self.sun_dir, axis=-1), 0.0)
+        # Soft sun disk.
+        sun_contrib = self.sun_power * self.sun * (cos_sun ** 256.0)[:, None]
+        # Rim light: broad glow from behind.
+        cos_rim = np.maximum(np.sum(direction * self.rim_dir, axis=-1), 0.0)
+        rim_contrib = self.rim_power * self.sun * (cos_rim ** 4.0)[:, None] * 0.15
+        # Horizon gradient: low y (downward) gets horizon colour; high y gets zenith.
+        t = np.clip(0.5 + 0.5 * direction[:, 1], 0.0, 1.0)
+        sky_col = self.zenith + (self.horizon - self.zenith) * t[:, None]
+        return sky_col * self.exposure + sun_contrib + rim_contrib
 
     def closest_bubble_intersect(self, origins: np.ndarray, directions: np.ndarray) -> tuple:
         """Intersect all bubbles, return nearest hit distance and bubble index."""
@@ -106,18 +160,6 @@ class Scene:
         t_min = np.min(t_all, axis=0)
         t_min = np.where(np.isfinite(t_min), t_min, np.inf)
         return t_min, hit_idx
-
-    def sky_radiance(self, direction: np.ndarray) -> np.ndarray:
-        """Return spectral radiance of the sky in a given direction."""
-        cos_sun = np.maximum(np.sum(direction * self.sun_dir, axis=-1), 0.0)
-        # Soft sun disk.
-        sun_contrib = self.sun * (cos_sun ** 256.0)[:, None]
-        # Horizon gradient: low y (downward) gets horizon colour; high y gets zenith.
-        t = np.clip(0.5 + 0.5 * direction[:, 1], 0.0, 1.0)
-        zenith = np.array([0.05, 0.10, 0.25, 0.40, 0.45, 0.42, 0.38, 0.35], dtype=np.float32)
-        horizon = np.array([0.55, 0.65, 0.85, 1.00, 1.05, 1.00, 0.95, 0.90], dtype=np.float32)
-        sky_col = zenith + (horizon - zenith) * t[:, None]
-        return sky_col + sun_contrib * 0.3
 
     def ground_intersect(self, origins: np.ndarray, directions: np.ndarray) -> np.ndarray:
         """Distance to the y=ground_y plane, only for downward rays."""
@@ -139,17 +181,41 @@ class Scene:
             in_light = in_light & np.isinf(t)
         return in_light
 
+    def reflected_ground_radiance(self, g_points: np.ndarray, view_dir: np.ndarray) -> np.ndarray:
+        """
+        Compute glossy reflected sky radiance for the ground.
+        A simple microfacet-like lobe pointing straight up blended with the view direction.
+        """
+        if self.ground_reflectivity <= 0.0:
+            return np.zeros((g_points.shape[0], N_WAVELENGTHS), dtype=np.float32)
+        # Halfway between view and up vector (0,1,0).
+        up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        half = view_dir + up[None, :]
+        half_norm = np.linalg.norm(half, axis=-1, keepdims=True)
+        half_norm = np.where(half_norm < 1e-6, 1.0, half_norm)
+        half = half / half_norm
+        # Approximate reflection direction: reflect view around half.
+        # For a glossy surface, just sample a cone around the mirror direction.
+        mirror = view_dir - 2.0 * np.sum(view_dir * up[None, :], axis=-1, keepdims=True) * up[None, :]
+        mirror = mirror / (np.linalg.norm(mirror, axis=-1, keepdims=True) + 1e-6)
+        # Return sky radiance in the mirror direction, modulated by gloss exponent.
+        rad = self.sky_radiance(mirror)
+        # Fresnel-like falloff at grazing angles.
+        cos_view_up = np.maximum(np.sum(view_dir * up[None, :], axis=-1), 0.0)
+        fresnel = 0.04 + 0.96 * (1.0 - cos_view_up) ** 5.0
+        return self.ground_reflectivity * fresnel[:, None] * rad
+
 
 def trace_once(scene: Scene, origins: np.ndarray, directions: np.ndarray) -> np.ndarray:
     """
-    Trace one sample for every pixel and return spectral radiance (N, 8).
+    Trace one sample for every pixel and return spectral radiance (N, N_WAVELENGTHS).
 
     We support two paths:
       1. Camera ray hits the nearest bubble shell -> thin-film reflection colour.
       2. Camera ray misses all bubbles -> sky / ground.
     """
     n = origins.shape[0]
-    radiance = np.zeros((n, WAVELENGTHS.size), dtype=np.float32)
+    radiance = np.zeros((n, N_WAVELENGTHS), dtype=np.float32)
 
     # Bubble intersection: nearest hit per ray.
     t_bubble, hit_idx = scene.closest_bubble_intersect(origins, directions)
@@ -207,10 +273,9 @@ def trace_once(scene: Scene, origins: np.ndarray, directions: np.ndarray) -> np.
             to_sun = scene.sun_dir
             in_light = scene.bubble_shadow(g_points, to_sun)
             sun_dot = np.maximum(np.sum(np.array([0.0, 1.0, 0.0], dtype=np.float32) * to_sun), 0.0)
-            ground_colour = 0.04 * sun_dot * scene.sun
+            ground_colour = 0.04 * sun_dot * scene.sun * scene.exposure
 
             # Specular highlight from bubble caustics: reflection of the nearest bubble.
-            # Find distance to nearest bubble centre.
             centres = np.stack([b.centre for b in scene.bubbles])
             diffs = g_points[:, None, :] - centres[None, :, :]
             nearest_i = np.argmin(np.linalg.norm(diffs, axis=-1), axis=-1)
@@ -218,7 +283,7 @@ def trace_once(scene: Scene, origins: np.ndarray, directions: np.ndarray) -> np.
             bubble_vec = nearest_centres - g_points
             bubble_vec = bubble_vec / np.linalg.norm(bubble_vec, axis=-1, keepdims=True)
             caustic = np.maximum(np.sum(bubble_vec * to_sun[None, :], axis=-1), 0.0) ** 8.0
-            ground_colour = ground_colour + in_light[:, None] * caustic[:, None] * scene.sun * 0.20
+            ground_colour = ground_colour + in_light[:, None] * caustic[:, None] * scene.sun * 0.35 * scene.sun_power
 
             # Darkening falloff away from caustic for visual interest.
             dist_from_centre = np.linalg.norm(g_points[:, [0, 2]] - nearest_centres[:, [0, 2]], axis=-1)
@@ -227,6 +292,10 @@ def trace_once(scene: Scene, origins: np.ndarray, directions: np.ndarray) -> np.
             # Subtle checker pattern.
             checker = ((np.floor(g_points[:, 0] * 2.0).astype(int) + np.floor(g_points[:, 2] * 2.0).astype(int)) % 2).astype(np.float32)
             ground_colour = ground_colour * (0.85 + 0.15 * checker)[:, None]
+
+            # Glossy reflection of sky on ground.
+            refl_ground = scene.reflected_ground_radiance(g_points, -g_d)
+            ground_colour = ground_colour + refl_ground
 
             miss_radiance = sky
             miss_radiance[ground_hit] = ground_colour
@@ -237,12 +306,21 @@ def trace_once(scene: Scene, origins: np.ndarray, directions: np.ndarray) -> np.
     return radiance
 
 
-def render(scene: Scene, camera: Camera, width: int, height: int, samples: int = 64, seed: int = 0) -> np.ndarray:
+def render(
+    scene: Scene,
+    camera: Camera,
+    width: int,
+    height: int,
+    samples: int = 64,
+    seed: int = 0,
+    tone_map: str = "linear",
+    saturation: float = 1.0,
+) -> np.ndarray:
     """
     Render the scene to an sRGB-encoded float32 image (H, W, 3).
     """
     rng = np.random.default_rng(seed)
-    accum = np.zeros((height * width, WAVELENGTHS.size), dtype=np.float32)
+    accum = np.zeros((height * width, N_WAVELENGTHS), dtype=np.float32)
 
     for s in range(samples):
         origins, directions, _ = camera.rays(width, height, samples=1 if s == 0 else 2, rng=rng)
@@ -251,6 +329,13 @@ def render(scene: Scene, camera: Camera, width: int, height: int, samples: int =
     # Average samples.
     spectral = accum / samples
     rgb_linear = spectrum_to_rgb(spectral)
+    rgb_linear = apply_tone_map(rgb_linear, mode=tone_map)
+
+    # Saturation/vibrance in Rec.709-ish space.
+    if saturation != 1.0:
+        grey = np.mean(rgb_linear, axis=-1, keepdims=True)
+        rgb_linear = np.clip(grey + (rgb_linear - grey) * saturation, 0.0, 1.0)
+
     rgb = gamma_encode(rgb_linear)
     return rgb.reshape(height, width, 3)
 

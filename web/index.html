@@ -23,55 +23,55 @@
       min-height: 100vh;
     }
     aside {
-      width: 320px;
+      width: 340px;
       background: var(--panel);
       border-right: 1px solid var(--border);
-      padding: 24px;
+      padding: 20px;
       display: flex;
       flex-direction: column;
-      gap: 18px;
+      gap: 12px;
       overflow-y: auto;
     }
-    h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: -0.3px; }
-    p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
-    label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+    h1 { margin: 0 0 6px; font-size: 20px; letter-spacing: -0.3px; }
+    p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+    label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
     input, select {
       background: var(--bg);
       border: 1px solid var(--border);
       color: var(--text);
-      padding: 8px 10px;
+      padding: 6px 8px;
       border-radius: 6px;
-      font-size: 14px;
+      font-size: 13px;
     }
-    input[type="checkbox"] { width: 18px; height: 18px; }
-    .row { display: flex; align-items: center; gap: 10px; }
+    input[type="checkbox"] { width: 16px; height: 16px; }
+    .row { display: flex; align-items: center; gap: 8px; }
     .row label { flex-direction: row; align-items: center; }
     button {
       background: var(--accent);
       color: #04101f;
       border: none;
-      padding: 12px;
+      padding: 10px;
       border-radius: 8px;
       font-weight: 600;
       cursor: pointer;
-      font-size: 15px;
-      margin-top: 8px;
+      font-size: 14px;
+      margin-top: 6px;
     }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
     main {
       flex: 1;
-      padding: 24px;
+      padding: 20px;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: flex-start;
-      gap: 16px;
+      gap: 14px;
     }
     #stage {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 16px;
+      padding: 14px;
       max-width: 100%;
     }
     #stage img {
@@ -81,17 +81,24 @@
     }
     #status {
       color: var(--muted);
-      font-size: 13px;
-      min-height: 18px;
+      font-size: 12px;
+      min-height: 16px;
     }
     .note {
       background: rgba(92, 168, 255, 0.08);
       border-left: 3px solid var(--accent);
-      padding: 12px;
+      padding: 10px;
       border-radius: 6px;
-      font-size: 12px;
+      font-size: 11px;
       color: var(--text);
     }
+    details {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px;
+      font-size: 12px;
+    }
+    summary { cursor: pointer; color: var(--text); font-weight: 500; }
   </style>
 </head>
 <body>
@@ -111,43 +118,66 @@
       <input id="backend" type="url" placeholder="http://localhost:5000/render">
     </label>
 
-    <label>
-      Image width
-      <input id="width" type="number" value="960" min="80" max="1920" step="10">
-    </label>
-
-    <label>
-      Image height
-      <input id="height" type="number" value="540" min="60" max="1080" step="10">
-    </label>
-
-    <label>
-      Samples per pixel
-      <input id="samples" type="number" value="64" min="1" max="512">
-    </label>
-
-    <label>
-      Film thickness (nm)
-      <input id="film" type="number" value="450" min="100" max="1000" step="10">
-    </label>
-
-    <label>
-      Thickness variation (nm)
-      <input id="var" type="number" value="40" min="0" max="200" step="5">
-    </label>
-
-    <label>
-      Bubble radius
-      <input id="radius" type="number" value="1.0" min="0.2" max="3.0" step="0.1">
-    </label>
-
+    <div class="row">
+      <label><input id="gpu" type="checkbox" checked> Use GPU backend</label>
+    </div>
     <div class="row">
       <label><input id="three" type="checkbox" checked> Three bubbles</label>
     </div>
 
-    <div class="row">
-      <label><input id="gpu" type="checkbox" checked> Use GPU backend</label>
-    </div>
+    <details open>
+      <summary>Image</summary>
+      <label>Width <input id="width" type="number" value="960" min="80" max="1920" step="10"></label>
+      <label>Height <input id="height" type="number" value="540" min="60" max="1080" step="10"></label>
+      <label>Samples <input id="samples" type="number" value="64" min="1" max="512"></label>
+      <label>Camera distance <input id="cameraDist" type="number" value="6.0" min="2.0" max="20.0" step="0.5"></label>
+      <label>FOV <input id="fov" type="number" value="50" min="10" max="120" step="1"></label>
+      <label>Aperture <input id="aperture" type="number" value="0.0" min="0.0" max="1.0" step="0.05"></label>
+    </details>
+
+    <details open>
+      <summary>Film</summary>
+      <label>Thickness (nm) <input id="film" type="number" value="450" min="100" max="1000" step="10"></label>
+      <label>Variation (nm) <input id="var" type="number" value="40" min="0" max="200" step="5"></label>
+      <label>Gradient <input id="gradient" type="number" value="0.5" min="0.0" max="2.0" step="0.1"></label>
+      <label>Swirl <input id="swirl" type="number" value="1.0" min="0.0" max="3.0" step="0.1"></label>
+      <label>Radius <input id="radius" type="number" value="1.0" min="0.2" max="3.0" step="0.1"></label>
+    </details>
+
+    <details open>
+      <summary>Lighting</summary>
+      <label>Background
+        <select id="background">
+          <option value="sky" selected>Sky</option>
+          <option value="studio">Dark studio</option>
+          <option value="night">Night</option>
+        </select>
+      </label>
+      <label>Sun power <input id="sunPower" type="number" value="1.0" min="0.0" max="3.0" step="0.1"></label>
+      <label>Rim power <input id="rimPower" type="number" value="0.6" min="0.0" max="3.0" step="0.1"></label>
+      <label>Ground gloss <input id="groundGloss" type="number" value="0.0" min="0.0" max="1.0" step="0.05"></label>
+      <label>Ground reflectivity <input id="groundRefl" type="number" value="0.0" min="0.0" max="1.0" step="0.05"></label>
+      <label>Exposure <input id="exposure" type="number" value="1.0" min="0.1" max="5.0" step="0.1"></label>
+    </details>
+
+    <details>
+      <summary>Post-processing</summary>
+      <label>Tone map
+        <select id="toneMap">
+          <option value="linear" selected>Linear</option>
+          <option value="aces">ACES filmic</option>
+          <option value="reinhard">Reinhard</option>
+        </select>
+      </label>
+      <label>Saturation <input id="saturation" type="number" value="1.0" min="0.0" max="2.0" step="0.1"></label>
+    </details>
+
+    <details>
+      <summary>Presets</summary>
+      <button type="button" id="presetStudio">Dark studio macro</button>
+      <button type="button" id="presetSunset">Sunset wide</button>
+      <button type="button" id="presetNight">Night rim</button>
+    </details>
 
     <button id="renderBtn">Render</button>
     <div id="status">Ready</div>
@@ -161,13 +191,10 @@
   </main>
 
   <script>
-    const backendInput = document.getElementById('backend');
-    const widthInput = document.getElementById('width');
-    const heightInput = document.getElementById('height');
-    const samplesInput = document.getElementById('samples');
-    const filmInput = document.getElementById('film');
-    const varInput = document.getElementById('var');
-    const radiusInput = document.getElementById('radius');
+    const ids = ['backend','width','height','samples','film','var','gradient','swirl','radius',
+                 'sunPower','rimPower','groundGloss','groundRefl','exposure','aperture',
+                 'cameraDist','fov','background','toneMap','saturation'];
+    const els = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
     const threeInput = document.getElementById('three');
     const gpuInput = document.getElementById('gpu');
     const renderBtn = document.getElementById('renderBtn');
@@ -175,29 +202,63 @@
     const result = document.getElementById('result');
     const placeholder = document.getElementById('placeholder');
 
+    function setPreset(p) {
+      for (const [k, v] of Object.entries(p)) {
+        if (els[k]) els[k].value = v;
+      }
+    }
+
+    document.getElementById('presetStudio').addEventListener('click', () => setPreset({
+      background:'studio', sunPower:1.2, rimPower:1.5, exposure:1.2,
+      groundGloss:0.3, groundRefl:0.2, toneMap:'aces', saturation:1.3,
+      cameraDist:4.0, fov:45, aperture:0.15
+    }));
+    document.getElementById('presetSunset').addEventListener('click', () => setPreset({
+      background:'sky', sunPower:1.5, rimPower:0.4, exposure:1.0,
+      groundGloss:0.1, groundRefl:0.0, toneMap:'linear', saturation:1.1,
+      cameraDist:7.0, fov:55, aperture:0.0
+    }));
+    document.getElementById('presetNight').addEventListener('click', () => setPreset({
+      background:'night', sunPower:0.6, rimPower:2.0, exposure:1.4,
+      groundGloss:0.0, groundRefl:0.0, toneMap:'aces', saturation:1.2,
+      cameraDist:5.0, fov:50, aperture:0.1
+    }));
+
     function save() {
-      localStorage.setItem('raybubbles_backend', backendInput.value);
+      localStorage.setItem('raybubbles_backend', els.backend.value);
     }
     function load() {
       const v = localStorage.getItem('raybubbles_backend');
-      if (v) backendInput.value = v;
+      if (v) els.backend.value = v;
     }
     load();
-    backendInput.addEventListener('change', save);
+    els.backend.addEventListener('change', save);
 
     renderBtn.addEventListener('click', async () => {
-      const backend = backendInput.value.trim();
+      const backend = els.backend.value.trim();
       const useGpu = gpuInput.checked && backend;
       const url = useGpu ? backend : '/api/render';
       const body = {
-        width: parseInt(widthInput.value),
-        height: parseInt(heightInput.value),
-        samples: parseInt(samplesInput.value),
-        film_thickness: parseFloat(filmInput.value),
-        thickness_var: parseFloat(varInput.value),
-        bubble_radius: parseFloat(radiusInput.value),
+        width: parseInt(els.width.value),
+        height: parseInt(els.height.value),
+        samples: parseInt(els.samples.value),
+        film_thickness: parseFloat(els.film.value),
+        thickness_var: parseFloat(els.var.value),
+        bubble_radius: parseFloat(els.radius.value),
         three: threeInput.checked,
-        gpu: useGpu,
+        background: els.background.value,
+        gradient: parseFloat(els.gradient.value),
+        swirl: parseFloat(els.swirl.value),
+        sun_power: parseFloat(els.sunPower.value),
+        rim_power: parseFloat(els.rimPower.value),
+        ground_gloss: parseFloat(els.groundGloss.value),
+        ground_refl: parseFloat(els.groundRefl.value),
+        exposure: parseFloat(els.exposure.value),
+        tone_map: els.toneMap.value,
+        saturation: parseFloat(els.saturation.value),
+        aperture: parseFloat(els.aperture.value),
+        camera_dist: parseFloat(els.cameraDist.value),
+        fov: parseFloat(els.fov.value),
       };
 
       renderBtn.disabled = true;

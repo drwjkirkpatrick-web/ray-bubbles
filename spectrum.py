@@ -1,21 +1,38 @@
 """
 Spectral helpers for ray-bubbles.
 
-We trace 8 discrete wavelengths from roughly 380 nm to 720 nm, then convert
-the resulting spectral radiance to sRGB using a simple CIE 1931 2-deg
-approximation. This is far smaller (and faster) than a full spectral render,
-but enough to capture thin-film interference rainbows accurately.
+We trace 16 discrete wavelengths from 380 nm to 700 nm, then convert the
+resulting spectral radiance to sRGB using CIE 1931 2-degree colour-matching
+functions. Sixteen bins give much smoother thin-film iridescence than the
+previous 8-bin setup while still running fast on the Jetson.
 """
 import numpy as np
 
-# 8 wavelength bins in nanometres, spanning visible light.
-WAVELENGTHS = np.array([380, 450, 500, 550, 600, 650, 700, 720], dtype=np.float32)
+N_WAVELENGTHS = 16
 
-# Crude CIE 1931 2-degree RGB colour-matching functions sampled at those bins.
-# These are normalised so that an equal-energy spectrum maps roughly to white.
-CIE_X = np.array([0.001_4, 0.336_2, 0.004_9, 0.33_20, 1.06_20, 0.431_56, 0.004_88, 0.000_17], dtype=np.float32)
-CIE_Y = np.array([0.000_0, 0.038_0, 0.32_30, 0.995_0, 0.631_0, 0.107_0, 0.004_10, 0.000_06], dtype=np.float32)
-CIE_Z = np.array([0.006_5, 1.772_1, 0.27_20, 0.045_5, 0.000_80, 0.000_01, 0.000_00, 0.000_00], dtype=np.float32)
+# 16 wavelength bins in nanometres, spanning visible light.
+WAVELENGTHS = np.array(
+    [380, 400, 420, 440, 460, 480, 500, 520, 540, 560, 580, 600, 620, 640, 660, 700],
+    dtype=np.float32,
+)
+
+# CIE 1931 2-degree colour-matching functions sampled at the bins above.
+# Values are drawn from the standard CIE 1931 observer tables.
+CIE_X = np.array(
+    [0.0014, 0.0143, 0.1344, 0.3483, 0.2908, 0.0956, 0.0049,
+     0.0633, 0.2904, 0.5945, 0.9163, 1.0622, 0.8544, 0.4479, 0.1649, 0.0114],
+    dtype=np.float32,
+)
+CIE_Y = np.array(
+    [0.0000, 0.0004, 0.0040, 0.0230, 0.0600, 0.1390, 0.3230,
+     0.7100, 0.9540, 0.9950, 0.8700, 0.6310, 0.3810, 0.1750, 0.0610, 0.0041],
+    dtype=np.float32,
+)
+CIE_Z = np.array(
+    [0.0065, 0.0679, 0.6456, 1.7471, 1.6692, 0.8130, 0.2720,
+     0.0782, 0.0203, 0.0039, 0.0017, 0.0008, 0.0002, 0.0000, 0.0000, 0.0000],
+    dtype=np.float32,
+)
 
 # sRGB conversion matrix (XYZ -> linear RGB).
 XYZ_TO_RGB = np.array([
@@ -54,3 +71,37 @@ def gamma_encode(rgb: np.ndarray) -> np.ndarray:
 def white_spectrum() -> np.ndarray:
     """Return a flat spectrum used for the sky dome."""
     return np.ones_like(WAVELENGTHS)
+
+
+def aces_filmic(x: np.ndarray) -> np.ndarray:
+    """
+    ACES-inspired filmic tone-mapping curve (Steve Morrow's fit).
+    Works on linear RGB images.
+    """
+    a = 2.51
+    b = 0.03
+    c = 2.43
+    d = 0.59
+    e = 0.14
+    return np.clip((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0)
+
+
+def reinhard(x: np.ndarray) -> np.ndarray:
+    """Simple Reinhard tone-mapping curve."""
+    return x / (1.0 + x)
+
+
+def apply_tone_map(rgb: np.ndarray, mode: str = "linear") -> np.ndarray:
+    """
+    Apply a tone-mapping curve to linear RGB.
+
+    Modes:
+      - "linear": clamp only (default, backward compatible).
+      - "aces": ACES filmic curve.
+      - "reinhard": Reinhard global operator.
+    """
+    if mode == "aces":
+        return aces_filmic(rgb)
+    if mode == "reinhard":
+        return reinhard(rgb)
+    return np.clip(rgb, 0.0, 1.0)

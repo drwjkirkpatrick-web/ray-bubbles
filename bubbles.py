@@ -2,17 +2,29 @@
 Bubble geometry and thin-film interference material.
 """
 import numpy as np
-from spectrum import WAVELENGTHS
+from spectrum import WAVELENGTHS, N_WAVELENGTHS
 
 
 class Bubble:
     """A spherical soap bubble with a thin water film."""
 
-    def __init__(self, centre: np.ndarray, radius: float, base_thickness_nm: float, thickness_variation_nm: float):
+    def __init__(
+        self,
+        centre: np.ndarray,
+        radius: float,
+        base_thickness_nm: float,
+        thickness_variation_nm: float,
+        gradient_factor: float = 0.5,
+        swirl_scale: float = 1.0,
+        swirl_strength: float = 1.0,
+    ):
         self.centre = np.asarray(centre, dtype=np.float32)
         self.radius = float(radius)
         self.base_thickness = float(base_thickness_nm)
         self.thickness_variation = float(thickness_variation_nm)
+        self.gradient_factor = float(gradient_factor)
+        self.swirl_scale = float(swirl_scale)
+        self.swirl_strength = float(swirl_strength)
 
     def intersect(self, origins: np.ndarray, directions: np.ndarray) -> np.ndarray:
         """
@@ -47,16 +59,24 @@ class Bubble:
         """
         Return film thickness in nm at each point.
 
-        We add a smooth swirl by perturbing the base thickness with a low-frequency
-        3D sine pattern, which produces the rainbow-like bands seen on real bubbles.
+        The model combines three effects seen in real soap films:
+          1. Gravity drainage: the top of the bubble is thinner than the bottom.
+          2. Large-scale swirl from 3D sine interference.
+          3. Base thickness and per-bubble variation.
         """
-        p = points * 0.5
+        # Normalised surface height: -1 at bottom, +1 at top.
+        rel_y = (points[:, 1] - self.centre[1]) / self.radius
+        # Top is thinner, bottom is thicker.
+        drainage = -rel_y * self.thickness_variation * self.gradient_factor
+
+        # Procedural colour swirl.
+        p = points * 0.5 * self.swirl_scale
         swirl = (
             np.sin(p[:, 0] + 2.0 * p[:, 1]) +
             np.sin(1.7 * p[:, 2] + 0.3 * p[:, 0]) +
             np.sin(0.9 * p[:, 1] - 1.1 * p[:, 2])
         ) / 3.0
-        return self.base_thickness + self.thickness_variation * swirl
+        return self.base_thickness + drainage + self.thickness_variation * swirl * self.swirl_strength
 
 
 def thin_film_reflection(cos_theta: np.ndarray, thickness_nm: np.ndarray, n_film: float = 1.33) -> np.ndarray:
@@ -82,10 +102,10 @@ def thin_film_reflection(cos_theta: np.ndarray, thickness_nm: np.ndarray, n_film
     R = r * r  # intensity reflectivity of one interface (N,)
 
     # Optical path difference for two passes through the film.
-    # wavelengths is (8,); thickness is (N, 1) so broadcasting gives (N, 8).
+    # wavelengths is (N_WAVELENGTHS,); thickness is (N, 1) so broadcasting gives (N, N_WAVELENGTHS).
     phase = (2.0 * np.pi * 2.0 * n_film * thickness_nm[:, None] * cos_theta_t[:, None]) / WAVELENGTHS[None, :]
 
-    # Interference of the two reflected beams.  R has shape (N,), so broadcast to (N, 8).
+    # Interference of the two reflected beams.  R has shape (N,), so broadcast to (N, N_WAVELENGTHS).
     R8 = R[:, None]
     reflectance = 2.0 * R8 * (1.0 - np.cos(phase)) / (1.0 + 2.0 * R8 * (1.0 - np.cos(phase)) + 1e-10)
     return np.clip(reflectance, 0.0, 1.0)

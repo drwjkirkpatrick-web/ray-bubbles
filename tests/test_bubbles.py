@@ -4,7 +4,7 @@ Unit tests for ray-bubbles.
 import numpy as np
 import pytest
 from bubbles import Bubble, thin_film_reflection, refract
-from spectrum import spectrum_to_rgb, gamma_encode
+from spectrum import spectrum_to_rgb, gamma_encode, N_WAVELENGTHS
 from tracer import Camera, Scene, render
 
 
@@ -28,12 +28,12 @@ def test_thin_film_shape():
     cos = np.array([0.5, 0.9])
     thick = np.array([400.0, 500.0])
     refl = thin_film_reflection(cos, thick)
-    assert refl.shape == (2, 8)
+    assert refl.shape == (2, N_WAVELENGTHS)
     assert np.all((refl >= 0) & (refl <= 1))
 
 
 def test_spectrum_to_rgb_white():
-    spec = np.ones(8, dtype=np.float32)
+    spec = np.ones(N_WAVELENGTHS, dtype=np.float32)
     rgb = spectrum_to_rgb(spec)
     assert rgb.shape == (3,)
     # White-equivalent spectrum should be reasonably balanced.

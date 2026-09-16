@@ -9,10 +9,12 @@ import numpy as np
 from numba import cuda
 from PIL import Image
 
+from spectrum import N_WAVELENGTHS
+
 
 def _pack_bubbles(bubbles):
     n = len(bubbles)
-    arr = np.empty((n, 7), dtype=np.float32)
+    arr = np.empty((n, 10), dtype=np.float32)
     for i, b in enumerate(bubbles):
         arr[i, 0] = b.centre[0]
         arr[i, 1] = b.centre[1]
@@ -20,20 +22,34 @@ def _pack_bubbles(bubbles):
         arr[i, 3] = b.radius
         arr[i, 4] = b.base_thickness
         arr[i, 5] = b.thickness_variation
-        arr[i, 6] = 0.0
+        arr[i, 6] = b.gradient_factor
+        arr[i, 7] = b.swirl_scale
+        arr[i, 8] = b.swirl_strength
+        arr[i, 9] = 0.0
     return arr
 
 
 def _pack_scene_flat(scene):
-    zenith = np.array([0.05, 0.10, 0.25, 0.40, 0.45, 0.42, 0.38, 0.35], dtype=np.float32)
-    horizon = np.array([0.55, 0.65, 0.85, 1.00, 1.05, 1.00, 0.95, 0.90], dtype=np.float32)
-    flat = np.empty(36, dtype=np.float32)
+    flat = np.empty(14 + 3 * N_WAVELENGTHS, dtype=np.float32)
+    # [0] ground_y, [1] sun_power, [2] rim_power, [3] exposure
     flat[0] = scene.ground_y
-    flat[1:4] = scene.sun_dir
-    flat[4:12] = scene.sun
-    flat[12:20] = scene.sky
-    flat[20:28] = zenith
-    flat[28:36] = horizon
+    flat[1] = scene.sun_power
+    flat[2] = scene.rim_power
+    flat[3] = scene.exposure
+    flat[4] = 0.0
+    flat[5] = 0.0
+    flat[6] = 0.0
+    flat[7] = 0.0
+    # sun_dir (3 floats)
+    flat[8:11] = scene.sun_dir
+    # sun spectrum (N floats)
+    flat[11:11 + N_WAVELENGTHS] = scene.sun
+    # zenith
+    flat[11 + N_WAVELENGTHS:11 + 2 * N_WAVELENGTHS] = scene.zenith
+    # horizon
+    flat[11 + 2 * N_WAVELENGTHS:11 + 3 * N_WAVELENGTHS] = scene.horizon
+    # rim_dir
+    flat[11 + 3 * N_WAVELENGTHS:14 + 3 * N_WAVELENGTHS] = scene.rim_dir
     return flat
 
 
@@ -78,11 +94,11 @@ def _render_kernel(
     if rng[0] == 0:
         rng[0] = 1
 
-    spec = cuda.local.array((8,), dtype=np.float32)
-    tmp_sky = cuda.local.array((8,), dtype=np.float32)
-    refl = cuda.local.array((8,), dtype=np.float32)
-    trans = cuda.local.array((8,), dtype=np.float32)
-    gcol = cuda.local.array((8,), dtype=np.float32)
+    spec = cuda.local.array((N_WAVELENGTHS,), dtype=np.float32)
+    tmp_sky = cuda.local.array((N_WAVELENGTHS,), dtype=np.float32)
+    refl = cuda.local.array((N_WAVELENGTHS,), dtype=np.float32)
+    trans = cuda.local.array((N_WAVELENGTHS,), dtype=np.float32)
+    gcol = cuda.local.array((N_WAVELENGTHS,), dtype=np.float32)
 
     d0 = 0.0
     d1 = 0.0
@@ -103,7 +119,7 @@ def _render_kernel(
     g1 = 0.0
     g2 = 0.0
 
-    for i in range(8):
+    for i in range(N_WAVELENGTHS):
         spec[i] = 0.0
 
     for s in range(samples):
@@ -171,11 +187,14 @@ def _render_kernel(
 
             cos_theta = (-d0) * n0 + (-d1) * n1 + (-d2) * n2
 
-            tx = p0 * 0.5
-            ty = p1 * 0.5
-            tz = p2 * 0.5
+            # Film thickness with gravity drainage and swirl.
+            rel_y = (p1 - bubbles[best_i, 1]) / bubbles[best_i, 3]
+            drainage = -rel_y * bubbles[best_i, 5] * bubbles[best_i, 6]
+            tx = p0 * 0.5 * bubbles[best_i, 7]
+            ty = p1 * 0.5 * bubbles[best_i, 7]
+            tz = p2 * 0.5 * bubbles[best_i, 7]
             swirl = (math.sin(tx + 2.0 * ty) + math.sin(1.7 * tz + 0.3 * tx) + math.sin(0.9 * ty - 1.1 * tz)) / 3.0
-            thickness = bubbles[best_i, 4] + bubbles[best_i, 5] * swirl
+            thickness = bubbles[best_i, 4] + drainage + bubbles[best_i, 5] * swirl * bubbles[best_i, 8]
 
             # Thin film.
             nidx = 1.33
@@ -189,7 +208,7 @@ def _render_kernel(
             cos_t = math.sqrt(cos_t_arg)
             rr = (ct - nidx * cos_t) / (ct + nidx * cos_t + 1e-10)
             R = rr * rr
-            for i in range(8):
+            for i in range(N_WAVELENGTHS):
                 phase = (2.0 * math.pi * 2.0 * nidx * thickness * cos_t) / wavelengths[i]
                 omc = 1.0 - math.cos(phase)
                 v = 2.0 * R * omc / (1.0 + 2.0 * R * omc + 1e-10)
@@ -204,7 +223,7 @@ def _render_kernel(
             r0 = d0 - dot * n0
             r1 = d1 - dot * n1
             r2 = d2 - dot * n2
-            ds = r0 * scene[1] + r1 * scene[2] + r2 * scene[3]
+            ds = r0 * scene[8] + r1 * scene[9] + r2 * scene[10]
             if ds < 0.0:
                 ds = 0.0
             sp = ds
@@ -215,9 +234,9 @@ def _render_kernel(
                 tt = 0.0
             if tt > 1.0:
                 tt = 1.0
-            for i in range(8):
-                sky_col = scene[20 + i] + (scene[28 + i] - scene[20 + i]) * tt
-                tmp_sky[i] = sky_col + 0.3 * scene[4 + i] * sp
+            for i in range(N_WAVELENGTHS):
+                sky_col = scene[11 + N_WAVELENGTHS + i] + (scene[11 + 2 * N_WAVELENGTHS + i] - scene[11 + N_WAVELENGTHS + i]) * tt
+                tmp_sky[i] = scene[3] * sky_col + 0.3 * scene[1] * scene[11 + i] * sp
 
             # Refracted transmission.
             cos_i = d0 * n0 + d1 * n1 + d2 * n2
@@ -264,7 +283,7 @@ def _render_kernel(
                     r0 = eta2 * t0 - k2 * nn0b
                     r1 = eta2 * t1 - k2 * nn1b
                     r2 = eta2 * t2 - k2 * nn2b
-                    ds = r0 * scene[1] + r1 * scene[2] + r2 * scene[3]
+                    ds = r0 * scene[8] + r1 * scene[9] + r2 * scene[10]
                     if ds < 0.0:
                         ds = 0.0
                     sp = ds
@@ -275,33 +294,38 @@ def _render_kernel(
                         tt = 0.0
                     if tt > 1.0:
                         tt = 1.0
-                    for i in range(8):
-                        sky_col = scene[20 + i] + (scene[28 + i] - scene[20 + i]) * tt
-                        trans[i] = sky_col + 0.3 * scene[4 + i] * sp
+                    for i in range(N_WAVELENGTHS):
+                        sky_col = scene[11 + N_WAVELENGTHS + i] + (scene[11 + 2 * N_WAVELENGTHS + i] - scene[11 + N_WAVELENGTHS + i]) * tt
+                        trans[i] = scene[3] * sky_col + 0.3 * scene[1] * scene[11 + i] * sp
                 else:
-                    for i in range(8):
+                    for i in range(N_WAVELENGTHS):
                         trans[i] = 0.0
             else:
-                for i in range(8):
+                for i in range(N_WAVELENGTHS):
                     trans[i] = 0.0
 
-            for i in range(8):
+            for i in range(N_WAVELENGTHS):
                 spec[i] += refl[i] * tmp_sky[i] + 0.15 * (1.0 - refl[i]) * trans[i]
         else:
-            ds = d0 * scene[1] + d1 * scene[2] + d2 * scene[3]
+            ds = d0 * scene[8] + d1 * scene[9] + d2 * scene[10]
             if ds < 0.0:
                 ds = 0.0
             sp = ds
             for _ in range(8):
                 sp = sp * sp
+            # Add rim contribution to misses too.
+            dr = d0 * scene[11 + 3 * N_WAVELENGTHS] + d1 * scene[12 + 3 * N_WAVELENGTHS] + d2 * scene[13 + 3 * N_WAVELENGTHS]
+            if dr < 0.0:
+                dr = 0.0
+            rp = dr ** 4.0
             tt = 0.5 + 0.5 * d1
             if tt < 0.0:
                 tt = 0.0
             if tt > 1.0:
                 tt = 1.0
-            for i in range(8):
-                sky_col = scene[20 + i] + (scene[28 + i] - scene[20 + i]) * tt
-                tmp_sky[i] = sky_col + 0.3 * scene[4 + i] * sp
+            for i in range(N_WAVELENGTHS):
+                sky_col = scene[11 + N_WAVELENGTHS + i] + (scene[11 + 2 * N_WAVELENGTHS + i] - scene[11 + N_WAVELENGTHS + i]) * tt
+                tmp_sky[i] = scene[3] * sky_col + 0.3 * scene[1] * scene[11 + i] * sp + 0.15 * scene[2] * scene[11 + i] * rp
 
             if d1 < -1e-6:
                 tg = (scene[0] - cam_origin1) / d1
@@ -311,9 +335,9 @@ def _render_kernel(
                     g2 = cam_origin2 + tg * d2
 
                     # Ground shade.
-                    sdir0 = scene[1]
-                    sdir1 = scene[2]
-                    sdir2 = scene[3]
+                    sdir0 = scene[8]
+                    sdir1 = scene[9]
+                    sdir2 = scene[10]
                     in_light = True
                     for i in range(n_bubbles):
                         oc0 = g0 - bubbles[i, 0]
@@ -337,8 +361,8 @@ def _render_kernel(
                     sun_dot = sdir1
                     if sun_dot < 0.0:
                         sun_dot = 0.0
-                    for i in range(8):
-                        gcol[i] = 0.04 * sun_dot * scene[4 + i]
+                    for i in range(N_WAVELENGTHS):
+                        gcol[i] = 0.04 * sun_dot * scene[3] * scene[11 + i]
 
                     nearest = 0
                     best = 1e30
@@ -367,8 +391,8 @@ def _render_kernel(
                     for _ in range(3):
                         caustic = caustic * caustic
                     if in_light:
-                        for i in range(8):
-                            gcol[i] += 0.20 * caustic * scene[4 + i]
+                        for i in range(N_WAVELENGTHS):
+                            gcol[i] += 0.35 * scene[1] * caustic * scene[11 + i]
 
                     dxz = g0 - bubbles[nearest, 0]
                     dzz = g2 - bubbles[nearest, 2]
@@ -378,23 +402,23 @@ def _render_kernel(
                     cz = math.floor(g2 * 2.0)
                     checker = 1.0 if (int(cx + cz) & 1) == 1 else 0.0
                     mod = 0.85 + 0.15 * checker
-                    for i in range(8):
+                    for i in range(N_WAVELENGTHS):
                         gcol[i] *= falloff * mod
 
-                    for i in range(8):
+                    for i in range(N_WAVELENGTHS):
                         spec[i] += gcol[i]
                 else:
-                    for i in range(8):
+                    for i in range(N_WAVELENGTHS):
                         spec[i] += tmp_sky[i]
             else:
-                for i in range(8):
+                for i in range(N_WAVELENGTHS):
                     spec[i] += tmp_sky[i]
 
     inv_s = 1.0 / float(samples)
     X = 0.0
     Y = 0.0
     Z = 0.0
-    for i in range(8):
+    for i in range(N_WAVELENGTHS):
         v = spec[i] * inv_s
         X += v * cie_x[i]
         Y += v * cie_y[i]
