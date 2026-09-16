@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--quality", type=str, default="balance", choices=["draft", "balance", "high"],
                         help="render quality preset: draft=fast, balance=default, high=slow+smooth")
     parser.add_argument("--three", action="store_true", help="render three bubbles sharing the same film settings")
+    parser.add_argument("--gpu", action="store_true", help="render on the GPU using Numba CUDA (fast)")
     args = parser.parse_args()
 
     common = dict(base_thickness_nm=args.film_thickness, thickness_variation_nm=args.thickness_var)
@@ -53,6 +54,15 @@ def main():
         samples = args.samples
 
     scene = Scene(bubbles=bubbles)
+
+    if args.gpu:
+        from cuda_tracer import gpu_available, render_gpu
+        if not gpu_available():
+            raise RuntimeError("GPU requested but no CUDA device is available")
+        print(f"rendering {args.width}x{args.height} with {samples} samples on GPU (quality={args.quality})...")
+        img = render_gpu(scene, camera, args.width, args.height, samples=samples, seed=args.seed, out_path=args.out)
+        # render_gpu already saves the PNG and returns a uint8 array; keep it consistent with save_image.
+        return
 
     print(f"rendering {args.width}x{args.height} with {samples} samples (quality={args.quality})...")
     img = render(scene, camera, args.width, args.height, samples=samples, seed=args.seed)
