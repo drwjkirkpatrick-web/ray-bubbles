@@ -1,12 +1,11 @@
 {
   "version": 2,
-  "routes": [
-    { "src": "/api/render", "dest": "/api/render.py" },
-    { "src": "/(.*)", "dest": "/web/$1" }
+  "builds": [
+    { "src": "api/render.py", "use": "@vercel/python" },
+    { "src": "web/**", "use": "@vercel/static" }
   ],
-  "functions": {
-    "api/render.py": {
-      "includeFiles": "../bubbles.py,../tracer.py,../spectrum.py,../render.py"
-    }
-  }
+  "routes": [
+    { "src": "/api/render", "dest": "api/render.py" },
+    { "src": "/(.*)", "dest": "/web/$1" }
+  ]
 }
