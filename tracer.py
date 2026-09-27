@@ -8,7 +8,10 @@ single-bounce shadow/ground bounce to fake the soft caustic look that soap
 bubbles have.
 """
 import numpy as np
-from spectrum import WAVELENGTHS, N_WAVELENGTHS, spectrum_to_rgb, gamma_encode, apply_tone_map
+from spectrum import (
+    WAVELENGTHS, N_WAVELENGTHS, spectrum_to_rgb, gamma_encode, apply_tone_map,
+    apply_vignette, apply_bloom, apply_grain, apply_chromatic_aberration,
+)
 from bubbles import Bubble, thin_film_reflection, refract
 
 
@@ -83,6 +86,20 @@ class Camera:
         return origins, dirs, (height, width)
 
 
+def _azimuth_elevation_to_dir(azimuth_deg: float, elevation_deg: float) -> np.ndarray:
+    """
+    Convert spherical azimuth/elevation (degrees) to a normalized direction vector.
+    Azimuth 0 = +x, 90 = +z; elevation 0 = horizon, 90 = straight up (+y).
+    """
+    az = np.radians(azimuth_deg)
+    el = np.radians(elevation_deg)
+    y = np.sin(el)
+    horiz = np.cos(el)
+    x = horiz * np.cos(az)
+    z = horiz * np.sin(az)
+    return np.array([x, y, z], dtype=np.float32)
+
+
 class Scene:
     """Scene holds geometry and lighting."""
 
@@ -97,24 +114,47 @@ class Scene:
         rim_dir: np.ndarray = None,
         ground_gloss: float = 0.0,
         ground_reflectivity: float = 0.0,
+        ground_roughness: float = 0.0,
         exposure: float = 1.0,
+        sun_azimuth: float = None,
+        sun_elevation: float = None,
+        rim_azimuth: float = None,
+        rim_elevation: float = None,
+        sun_color: np.ndarray = None,
+        rim_color: np.ndarray = None,
+        sun_disc: float = 0.0,
     ):
         self.bubbles = bubbles if isinstance(bubbles, list) else [bubbles]
+
+        # Build sun direction from azimuth/elevation if provided.
         if sun_dir is None:
-            sun_dir = np.array([0.3, 0.8, -0.5], dtype=np.float32)
-        if rim_dir is None:
-            rim_dir = np.array([-0.5, 0.2, -0.8], dtype=np.float32)
+            if sun_azimuth is not None and sun_elevation is not None:
+                sun_dir = _azimuth_elevation_to_dir(sun_azimuth, sun_elevation)
+            else:
+                sun_dir = np.array([0.3, 0.8, -0.5], dtype=np.float32)
         self.sun_dir = sun_dir / np.linalg.norm(sun_dir)
+
+        if rim_dir is None:
+            if rim_azimuth is not None and rim_elevation is not None:
+                rim_dir = _azimuth_elevation_to_dir(rim_azimuth, rim_elevation)
+            else:
+                rim_dir = np.array([-0.5, 0.2, -0.8], dtype=np.float32)
+        self.rim_dir = rim_dir / np.linalg.norm(rim_dir)
+
         self.ground_y = float(ground_y)
         self.background = background
         self.sun_power = float(sun_power)
         self.rim_power = float(rim_power)
-        self.rim_dir = rim_dir / np.linalg.norm(rim_dir)
         self.ground_gloss = float(ground_gloss)
         self.ground_reflectivity = float(ground_reflectivity)
+        self.ground_roughness = float(ground_roughness)
         self.exposure = float(exposure)
+        self.sun_disc = float(sun_disc)
 
-        # Sky radiance presets.
+        self.sun_color = np.array([1.0, 1.0, 1.0], dtype=np.float32) if sun_color is None else np.asarray(sun_color, dtype=np.float32)
+        self.rim_color = np.array([1.0, 1.0, 1.0], dtype=np.float32) if rim_color is None else np.asarray(rim_color, dtype=np.float32)
+
+        # ... rest of constructor continues with sky presets
         if background == "studio":
             # Dark low-key studio: very dark blue-grey zenith, slightly lighter horizon.
             self.zenith = np.array([0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.03, 0.03,
@@ -143,6 +183,10 @@ class Scene:
         cos_sun = np.maximum(np.sum(direction * self.sun_dir, axis=-1), 0.0)
         # Soft sun disk.
         sun_contrib = self.sun_power * self.sun * (cos_sun ** 256.0)[:, None]
+        # Hard visible sun disc when enabled.
+        if self.sun_disc > 0.0:
+            disc_mask = (cos_sun > 0.997).astype(np.float32)
+            sun_contrib = sun_contrib + self.sun_disc * self.sun_power * self.sun * disc_mask[:, None]
         # Rim light: broad glow from behind.
         cos_rim = np.maximum(np.sum(direction * self.rim_dir, axis=-1), 0.0)
         rim_contrib = self.rim_power * self.sun * (cos_rim ** 4.0)[:, None] * 0.15
@@ -150,6 +194,14 @@ class Scene:
         t = np.clip(0.5 + 0.5 * direction[:, 1], 0.0, 1.0)
         sky_col = self.zenith + (self.horizon - self.zenith) * t[:, None]
         return sky_col * self.exposure + sun_contrib + rim_contrib
+
+    def light_tint(self, rgb: np.ndarray, light: str = "sun") -> np.ndarray:
+        """Apply a simple per-light RGB gel tint to a spectral radiance estimate."""
+        # This method expects a linear RGB array (... , 3).
+        if rgb.shape[-1] != 3:
+            return rgb
+        color = self.sun_color if light == "sun" else self.rim_color
+        return rgb * color[None, :]
 
     def closest_bubble_intersect(self, origins: np.ndarray, directions: np.ndarray) -> tuple:
         """Intersect all bubbles, return nearest hit distance and bubble index."""
@@ -181,12 +233,29 @@ class Scene:
             in_light = in_light & np.isinf(t)
         return in_light
 
+    def ambient_occlusion(self, points: np.ndarray, normals: np.ndarray) -> np.ndarray:
+        """
+        Simple ambient occlusion for bubble overlaps.
+        Cast short rays in the hemisphere around the normal; occlusion if another bubble is nearby.
+        """
+        if len(self.bubbles) < 2:
+            return np.ones(points.shape[0], dtype=np.float32)
+        # Use a single sample direction pointing toward the average of other bubble centres.
+        ao = np.ones(points.shape[0], dtype=np.float32)
+        for bubble in self.bubbles:
+            to_centre = bubble.centre[None, :] - points
+            dist = np.linalg.norm(to_centre, axis=-1)
+            dot = np.maximum(np.sum(normals * to_centre / (dist[:, None] + 1e-6), axis=-1), 0.0)
+            occlusion = np.clip(dot * (1.0 - dist / (bubble.radius * 2.5)), 0.0, 1.0)
+            ao = ao * (1.0 - occlusion)
+        return np.clip(ao, 0.2, 1.0)
+
     def reflected_ground_radiance(self, g_points: np.ndarray, view_dir: np.ndarray) -> np.ndarray:
         """
         Compute glossy reflected sky radiance for the ground.
         A simple microfacet-like lobe pointing straight up blended with the view direction.
         """
-        if self.ground_reflectivity <= 0.0:
+        if self.ground_reflectivity <= 0.0 and self.ground_roughness <= 0.0:
             return np.zeros((g_points.shape[0], N_WAVELENGTHS), dtype=np.float32)
         # Halfway between view and up vector (0,1,0).
         up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -203,7 +272,9 @@ class Scene:
         # Fresnel-like falloff at grazing angles.
         cos_view_up = np.maximum(np.sum(view_dir * up[None, :], axis=-1), 0.0)
         fresnel = 0.04 + 0.96 * (1.0 - cos_view_up) ** 5.0
-        return self.ground_reflectivity * fresnel[:, None] * rad
+        # Roughness blurs the reflection by reducing its intensity.
+        rough_factor = 1.0 - self.ground_roughness
+        return rough_factor * self.ground_reflectivity * fresnel[:, None] * rad
 
 
 def trace_once(scene: Scene, origins: np.ndarray, directions: np.ndarray) -> np.ndarray:
@@ -243,6 +314,9 @@ def trace_once(scene: Scene, origins: np.ndarray, directions: np.ndarray) -> np.
         cos_theta = np.sum(view * normals, axis=-1)
         reflection = thin_film_reflection(cos_theta, thickness)
 
+        # Ambient occlusion between bubbles.
+        ao = scene.ambient_occlusion(points, normals)
+
         # Reflected sky/sky dome colour.
         reflected_dir = hit_d - 2.0 * np.sum(hit_d * normals, axis=-1)[:, None] * normals
         sky_ref = scene.sky_radiance(reflected_dir)
@@ -256,7 +330,7 @@ def trace_once(scene: Scene, origins: np.ndarray, directions: np.ndarray) -> np.
         if np.any(valid_transmission):
             sky_trans[valid_transmission] = scene.sky_radiance(refr_dir_out[valid_transmission])
 
-        radiance[hit_mask] = reflection * sky_ref + 0.15 * T * sky_trans
+        radiance[hit_mask] = (reflection * sky_ref + 0.15 * T * sky_trans) * ao[:, None]
 
     # ---- Misses: sky + ground ----
     if np.any(miss_mask):
@@ -297,6 +371,9 @@ def trace_once(scene: Scene, origins: np.ndarray, directions: np.ndarray) -> np.
             refl_ground = scene.reflected_ground_radiance(g_points, -g_d)
             ground_colour = ground_colour + refl_ground
 
+            # Apply sun/rim color gels to ground lighting (simplified spectral tint).
+            ground_colour = scene.light_tint(ground_colour, light="sun")
+
             miss_radiance = sky
             miss_radiance[ground_hit] = ground_colour
         else:
@@ -315,6 +392,10 @@ def render(
     seed: int = 0,
     tone_map: str = "linear",
     saturation: float = 1.0,
+    vignette: float = 0.0,
+    bloom: float = 0.0,
+    grain: float = 0.0,
+    chromatic: float = 0.0,
 ) -> np.ndarray:
     """
     Render the scene to an sRGB-encoded float32 image (H, W, 3).
@@ -331,13 +412,43 @@ def render(
     rgb_linear = spectrum_to_rgb(spectral)
     rgb_linear = apply_tone_map(rgb_linear, mode=tone_map)
 
+    # Chromatic aberration: radial RGB channel separation.
+    if chromatic != 0.0 and width > 1 and height > 1:
+        rgb_linear = apply_chromatic_aberration(rgb_linear, width, height, strength=chromatic)
+
     # Saturation/vibrance in Rec.709-ish space.
     if saturation != 1.0:
         grey = np.mean(rgb_linear, axis=-1, keepdims=True)
         rgb_linear = np.clip(grey + (rgb_linear - grey) * saturation, 0.0, 1.0)
 
+    # Vignette.
+    if vignette > 0.0:
+        rgb_linear = apply_vignette(rgb_linear, width, height, strength=vignette)
+
+    # Bloom (thresholded blur).
+    if bloom > 0.0:
+        rgb_linear = apply_bloom(rgb_linear, width, height, strength=bloom)
+
+    # Film grain.
+    if grain > 0.0:
+        rgb_linear = apply_grain(rgb_linear, width, height, strength=grain, rng=rng)
+
     rgb = gamma_encode(rgb_linear)
     return rgb.reshape(height, width, 3)
+
+
+def focus_camera(camera: Camera, scene: Scene):
+    """Pick a focal distance that places the nearest bubble surface in sharp focus."""
+    # Estimate distance from camera origin to the centre of the closest bubble minus its radius.
+    if not scene.bubbles:
+        return getattr(camera, "focal_distance", camera.focus_distance)
+    origins = camera.origin[None, :]
+    dirs = camera.forward[None, :]
+    t, idx = scene.closest_bubble_intersect(origins, dirs)
+    if np.isfinite(t[0]):
+        hit_point = origins[0] + dirs[0] * t[0]
+        return float(np.linalg.norm(hit_point - camera.origin))
+    return getattr(camera, "focal_distance", camera.focus_distance)
 
 
 def save_image(img: np.ndarray, path: str):

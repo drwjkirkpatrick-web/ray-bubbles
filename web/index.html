@@ -23,19 +23,19 @@
       min-height: 100vh;
     }
     aside {
-      width: 340px;
+      width: 360px;
       background: var(--panel);
       border-right: 1px solid var(--border);
       padding: 20px;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 10px;
       overflow-y: auto;
     }
     h1 { margin: 0 0 6px; font-size: 20px; letter-spacing: -0.3px; }
     p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
     label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-    input, select {
+    input, select, button {
       background: var(--bg);
       border: 1px solid var(--border);
       color: var(--text);
@@ -57,6 +57,7 @@
       font-size: 14px;
       margin-top: 6px;
     }
+    button.secondary { background: transparent; border: 1px solid var(--accent); color: var(--accent); }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
     main {
       flex: 1;
@@ -99,6 +100,9 @@
       font-size: 12px;
     }
     summary { cursor: pointer; color: var(--text); font-weight: 500; }
+    .color-row { display: flex; gap: 8px; }
+    .color-row label { flex: 1; }
+    .color-row input[type="color"] { padding: 0; height: 28px; }
   </style>
 </head>
 <body>
@@ -123,6 +127,9 @@
     </div>
     <div class="row">
       <label><input id="three" type="checkbox" checked> Three bubbles</label>
+    </div>
+    <div class="row">
+      <label><input id="autoFocus" type="checkbox"> Auto-focus</label>
     </div>
 
     <details open>
@@ -155,12 +162,22 @@
       </label>
       <label>Sun power <input id="sunPower" type="number" value="1.0" min="0.0" max="3.0" step="0.1"></label>
       <label>Rim power <input id="rimPower" type="number" value="0.6" min="0.0" max="3.0" step="0.1"></label>
+      <label>Sun azimuth <input id="sunAzimuth" type="number" value="30" min="0" max="360" step="5"></label>
+      <label>Sun elevation <input id="sunElevation" type="number" value="60" min="0" max="90" step="5"></label>
+      <label>Rim azimuth <input id="rimAzimuth" type="number" value="200" min="0" max="360" step="5"></label>
+      <label>Rim elevation <input id="rimElevation" type="number" value="20" min="0" max="90" step="5"></label>
+      <div class="color-row">
+        <label>Sun color <input id="sunColor" type="color" value="#ffffff"></label>
+        <label>Rim color <input id="rimColor" type="color" value="#ffffff"></label>
+      </div>
+      <label>Sun disc <input id="sunDisc" type="number" value="0.0" min="0.0" max="5.0" step="0.1"></label>
       <label>Ground gloss <input id="groundGloss" type="number" value="0.0" min="0.0" max="1.0" step="0.05"></label>
       <label>Ground reflectivity <input id="groundRefl" type="number" value="0.0" min="0.0" max="1.0" step="0.05"></label>
+      <label>Ground roughness <input id="groundRough" type="number" value="0.0" min="0.0" max="1.0" step="0.05"></label>
       <label>Exposure <input id="exposure" type="number" value="1.0" min="0.1" max="5.0" step="0.1"></label>
     </details>
 
-    <details>
+    <details open>
       <summary>Post-processing</summary>
       <label>Tone map
         <select id="toneMap">
@@ -170,6 +187,10 @@
         </select>
       </label>
       <label>Saturation <input id="saturation" type="number" value="1.0" min="0.0" max="2.0" step="0.1"></label>
+      <label>Vignette <input id="vignette" type="number" value="0.0" min="0.0" max="1.0" step="0.05"></label>
+      <label>Bloom <input id="bloom" type="number" value="0.0" min="0.0" max="1.0" step="0.05"></label>
+      <label>Grain <input id="grain" type="number" value="0.0" min="0.0" max="2.0" step="0.1"></label>
+      <label>Chromatic aberration <input id="chromatic" type="number" value="0.0" min="0.0" max="0.1" step="0.005"></label>
     </details>
 
     <details>
@@ -192,11 +213,13 @@
 
   <script>
     const ids = ['backend','width','height','samples','film','var','gradient','swirl','radius',
-                 'sunPower','rimPower','groundGloss','groundRefl','exposure','aperture',
-                 'cameraDist','fov','background','toneMap','saturation'];
+                 'sunPower','rimPower','groundGloss','groundRefl','groundRough','exposure','aperture',
+                 'cameraDist','fov','background','toneMap','saturation','vignette','bloom','grain',
+                 'chromatic','sunAzimuth','sunElevation','rimAzimuth','rimElevation','sunColor','rimColor','sunDisc'];
     const els = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
     const threeInput = document.getElementById('three');
     const gpuInput = document.getElementById('gpu');
+    const autoFocusInput = document.getElementById('autoFocus');
     const renderBtn = document.getElementById('renderBtn');
     const status = document.getElementById('status');
     const result = document.getElementById('result');
@@ -208,20 +231,37 @@
       }
     }
 
+    function colorHexToRgb(hex) {
+      return [
+        parseInt(hex.slice(1,3),16),
+        parseInt(hex.slice(3,5),16),
+        parseInt(hex.slice(5,7),16),
+      ];
+    }
+
     document.getElementById('presetStudio').addEventListener('click', () => setPreset({
       background:'studio', sunPower:1.2, rimPower:1.5, exposure:1.2,
-      groundGloss:0.3, groundRefl:0.2, toneMap:'aces', saturation:1.3,
-      cameraDist:4.0, fov:45, aperture:0.15
+      groundGloss:0.3, groundRefl:0.2, groundRough:0.1, toneMap:'aces', saturation:1.3,
+      vignette:0.35, bloom:0.25, grain:0.5, chromatic:0.005,
+      cameraDist:4.0, fov:45, aperture:0.15,
+      sunAzimuth:90, sunElevation:45, rimAzimuth:270, rimElevation:30,
+      sunColor:'#fff8e7', rimColor:'#7ec8ff'
     }));
     document.getElementById('presetSunset').addEventListener('click', () => setPreset({
       background:'sky', sunPower:1.5, rimPower:0.4, exposure:1.0,
-      groundGloss:0.1, groundRefl:0.0, toneMap:'linear', saturation:1.1,
-      cameraDist:7.0, fov:55, aperture:0.0
+      groundGloss:0.1, groundRefl:0.0, groundRough:0.0, toneMap:'linear', saturation:1.1,
+      vignette:0.15, bloom:0.1, grain:0.0, chromatic:0.0,
+      cameraDist:7.0, fov:55, aperture:0.0,
+      sunAzimuth:30, sunElevation:15, rimAzimuth:200, rimElevation:20,
+      sunColor:'#ffdca0', rimColor:'#a0c8ff'
     }));
     document.getElementById('presetNight').addEventListener('click', () => setPreset({
       background:'night', sunPower:0.6, rimPower:2.0, exposure:1.4,
-      groundGloss:0.0, groundRefl:0.0, toneMap:'aces', saturation:1.2,
-      cameraDist:5.0, fov:50, aperture:0.1
+      groundGloss:0.0, groundRefl:0.0, groundRough:0.0, toneMap:'aces', saturation:1.2,
+      vignette:0.5, bloom:0.15, grain:0.8, chromatic:0.01,
+      cameraDist:5.0, fov:50, aperture:0.1,
+      sunAzimuth:160, sunElevation:10, rimAzimuth:340, rimElevation:40,
+      sunColor:'#c8d8ff', rimColor:'#ff8ca0'
     }));
 
     function save() {
@@ -251,14 +291,27 @@
         swirl: parseFloat(els.swirl.value),
         sun_power: parseFloat(els.sunPower.value),
         rim_power: parseFloat(els.rimPower.value),
+        sun_azimuth: parseFloat(els.sunAzimuth.value),
+        sun_elevation: parseFloat(els.sunElevation.value),
+        rim_azimuth: parseFloat(els.rimAzimuth.value),
+        rim_elevation: parseFloat(els.rimElevation.value),
+        sun_color: colorHexToRgb(els.sunColor.value),
+        rim_color: colorHexToRgb(els.rimColor.value),
+        sun_disc: parseFloat(els.sunDisc.value),
         ground_gloss: parseFloat(els.groundGloss.value),
         ground_refl: parseFloat(els.groundRefl.value),
+        ground_rough: parseFloat(els.groundRough.value),
         exposure: parseFloat(els.exposure.value),
         tone_map: els.toneMap.value,
         saturation: parseFloat(els.saturation.value),
+        vignette: parseFloat(els.vignette.value),
+        bloom: parseFloat(els.bloom.value),
+        grain: parseFloat(els.grain.value),
+        chromatic: parseFloat(els.chromatic.value),
         aperture: parseFloat(els.aperture.value),
         camera_dist: parseFloat(els.cameraDist.value),
         fov: parseFloat(els.fov.value),
+        auto_focus: autoFocusInput.checked,
       };
 
       renderBtn.disabled = true;

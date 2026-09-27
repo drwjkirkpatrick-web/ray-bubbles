@@ -105,3 +105,144 @@ def apply_tone_map(rgb: np.ndarray, mode: str = "linear") -> np.ndarray:
     if mode == "reinhard":
         return reinhard(rgb)
     return np.clip(rgb, 0.0, 1.0)
+
+
+def vignette(rgb: np.ndarray, strength: float = 0.0) -> np.ndarray:
+    """
+    Apply a radial vignette falloff.
+    strength=0 means no vignette; 1.0 is strong darkening at corners.
+    """
+    if strength <= 0.0:
+        return rgb
+    h, w = rgb.shape[:2]
+    y = np.linspace(-1.0, 1.0, h)
+    x = np.linspace(-1.0, 1.0, w)
+    xv, yv = np.meshgrid(x, y)
+    r = np.sqrt(xv * xv + yv * yv)
+    r = np.clip(r, 0.0, 1.0)
+    factor = 1.0 - strength * (r ** 2.0)
+    return np.clip(rgb * factor[:, :, None], 0.0, 1.0)
+
+
+def apply_vignette(rgb: np.ndarray, width: int, height: int, strength: float = 0.0) -> np.ndarray:
+    """
+    Flat-array wrapper for the radial vignette falloff.
+    rgb: (H*W, 3) linear RGB.  Returns same shape.
+    """
+    if strength <= 0.0:
+        return rgb
+    img = rgb.reshape(height, width, 3)
+    img = vignette(img, strength)
+    return img.reshape(-1, 3)
+
+
+def apply_bloom(rgb: np.ndarray, width: int, height: int, strength: float = 0.0, threshold: float = 0.8) -> np.ndarray:
+    """Flat-array wrapper for simple box-blur bloom."""
+    if strength <= 0.0:
+        return rgb
+    img = rgb.reshape(height, width, 3)
+    bright = np.where(img > threshold, img - threshold, 0.0)
+    from scipy.ndimage import uniform_filter
+    blurred = uniform_filter(bright, size=5, mode="constant")
+    img = np.clip(img + strength * blurred, 0.0, 1.0)
+    return img.reshape(-1, 3)
+
+
+def apply_grain(rgb: np.ndarray, width: int, height: int, strength: float = 0.0, rng=None) -> np.ndarray:
+    """Flat-array wrapper for film grain."""
+    if strength <= 0.0:
+        return rgb
+    img = rgb.reshape(height, width, 3)
+    noise = rng.normal(0.0, strength / 255.0, img.shape) if rng is not None else np.random.normal(0.0, strength / 255.0, img.shape)
+    img = np.clip(img + noise, 0.0, 1.0)
+    return img.reshape(-1, 3)
+
+
+def apply_chromatic_aberration(rgb: np.ndarray, width: int, height: int, strength: float = 0.0) -> np.ndarray:
+    """
+    Radial RGB channel separation (red pushed outward, blue inward).
+    rgb: (H*W, 3) linear RGB.  Returns same shape.
+    """
+    if strength == 0.0 or width <= 1 or height <= 1:
+        return rgb
+    img = rgb.reshape(height, width, 3)
+    y = np.linspace(-1.0, 1.0, height)
+    x = np.linspace(-1.0, 1.0, width)
+    xv, yv = np.meshgrid(x, y)
+    r = np.sqrt(xv * xv + yv * yv) + 1e-6
+    dx = xv / r
+    dy = yv / r
+    r_norm = np.clip(r, 0.0, 1.0)
+
+    def sample_shifted(channel: np.ndarray, offset: np.ndarray) -> np.ndarray:
+        if np.all(offset == 0.0):
+            return channel
+        yy = yv - dy * offset
+        xx = xv - dx * offset
+        # Map normalized coords to pixel indices.
+        rowf = (1.0 - yy) * 0.5 * (height - 1)
+        colf = (xx + 1.0) * 0.5 * (width - 1)
+        row0 = np.floor(rowf).astype(int)
+        col0 = np.floor(colf).astype(int)
+        row1 = np.clip(row0 + 1, 0, height - 1)
+        col1 = np.clip(col0 + 1, 0, width - 1)
+        row0 = np.clip(row0, 0, height - 1)
+        col0 = np.clip(col0, 0, width - 1)
+        dr = rowf - row0
+        dc = colf - col0
+        a = channel[row0, col0] * (1 - dc) + channel[row0, col1] * dc
+        b = channel[row1, col0] * (1 - dc) + channel[row1, col1] * dc
+        return a * (1 - dr) + b * dr
+
+    out = np.stack([
+        sample_shifted(img[:, :, 0], -strength * r_norm),
+        sample_shifted(img[:, :, 1], np.zeros_like(r_norm)),
+        sample_shifted(img[:, :, 2], strength * r_norm),
+    ], axis=-1)
+    return np.clip(out, 0.0, 1.0).reshape(-1, 3)
+
+
+def bloom(rgb: np.ndarray, strength: float = 0.0, threshold: float = 0.8) -> np.ndarray:
+    """
+    Simple box-blur bloom. Extracts bright pixels, blurs them, and adds back.
+    """
+    if strength <= 0.0:
+        return rgb
+    bright = np.where(rgb > threshold, rgb - threshold, 0.0)
+    from scipy.ndimage import uniform_filter
+    blurred = uniform_filter(bright, size=5, mode="constant")
+    return np.clip(rgb + strength * blurred, 0.0, 1.0)
+
+
+def grain(rgb: np.ndarray, strength: float = 0.0, seed: int = 0) -> np.ndarray:
+    """
+    Add film-like grain using per-pixel Gaussian noise.
+    """
+    if strength <= 0.0:
+        return rgb
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0.0, strength / 255.0, rgb.shape)
+    return np.clip(rgb + noise, 0.0, 1.0)
+
+
+def post_process(
+    rgb: np.ndarray,
+    tone_map: str = "linear",
+    saturation: float = 1.0,
+    vignette_strength: float = 0.0,
+    bloom_strength: float = 0.0,
+    grain_strength: float = 0.0,
+    seed: int = 0,
+) -> np.ndarray:
+    """
+    Full CPU post-processing pipeline on linear RGB.
+    Order: tone map -> saturation -> vignette -> bloom -> grain -> clamp.
+    """
+    rgb = apply_tone_map(rgb, mode=tone_map)
+    if saturation != 1.0:
+        grey = np.mean(rgb, axis=-1, keepdims=True)
+        rgb = np.clip(grey + (rgb - grey) * saturation, 0.0, 1.0)
+    rgb = vignette(rgb, vignette_strength)
+    rgb = bloom(rgb, bloom_strength)
+    rgb = grain(rgb, grain_strength, seed=seed)
+    return np.clip(rgb, 0.0, 1.0)

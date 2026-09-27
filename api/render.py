@@ -7,7 +7,6 @@ import json
 from urllib.parse import parse_qs
 from tracer import Camera, Scene, render
 from bubbles import Bubble
-from spectrum import apply_tone_map
 import numpy as np
 from PIL import Image
 import io
@@ -25,6 +24,23 @@ def _bool_param(params, key, default):
     if isinstance(v, str):
         return v.lower() in ("true", "1", "yes", "on")
     return bool(v)
+
+
+def _parse_color(params, key):
+    v = params.get(key)
+    if v is None:
+        return None
+    if isinstance(v, str):
+        if v.startswith("#"):
+            return np.array([
+                int(v[1:3], 16) / 255.0,
+                int(v[3:5], 16) / 255.0,
+                int(v[5:7], 16) / 255.0,
+            ], dtype=np.float32)
+        parts = [float(p) for p in v.split(",")]
+        return np.array(parts, dtype=np.float32) / 255.0 if max(parts) > 1.0 else np.array(parts, dtype=np.float32)
+    arr = np.array(v, dtype=np.float32)
+    return arr / 255.0 if arr.max() > 1.0 else arr
 
 
 def _do_render(environ):
@@ -52,11 +68,23 @@ def _do_render(environ):
         swirl = float(params.get("swirl", 1.0))
         sun_power = float(params.get("sun_power", 1.0))
         rim_power = float(params.get("rim_power", 0.6))
+        sun_azimuth = float(params["sun_azimuth"]) if "sun_azimuth" in params else None
+        sun_elevation = float(params["sun_elevation"]) if "sun_elevation" in params else None
+        rim_azimuth = float(params["rim_azimuth"]) if "rim_azimuth" in params else None
+        rim_elevation = float(params["rim_elevation"]) if "rim_elevation" in params else None
+        sun_color = _parse_color(params, "sun_color")
+        rim_color = _parse_color(params, "rim_color")
+        sun_disc = float(params.get("sun_disc", 0.0))
         ground_gloss = float(params.get("ground_gloss", 0.0))
         ground_refl = float(params.get("ground_refl", 0.0))
+        ground_rough = float(params.get("ground_rough", 0.0))
         exposure = float(params.get("exposure", 1.0))
         tone_map = params.get("tone_map", "linear")
         saturation = float(params.get("saturation", 1.0))
+        vignette = float(params.get("vignette", 0.0))
+        bloom = float(params.get("bloom", 0.0))
+        grain = float(params.get("grain", 0.0))
+        chromatic = float(params.get("chromatic", 0.0))
 
         common = dict(
             base_thickness_nm=film_thickness,
@@ -88,11 +116,21 @@ def _do_render(environ):
             background=background,
             sun_power=sun_power,
             rim_power=rim_power,
+            sun_azimuth=sun_azimuth,
+            sun_elevation=sun_elevation,
+            rim_azimuth=rim_azimuth,
+            rim_elevation=rim_elevation,
+            sun_color=sun_color,
+            rim_color=rim_color,
+            sun_disc=sun_disc,
             ground_gloss=ground_gloss,
             ground_reflectivity=ground_refl,
+            ground_roughness=ground_rough,
             exposure=exposure,
         )
-        img = render(scene, camera, width, height, samples=samples, seed=1, tone_map=tone_map, saturation=saturation)
+        img = render(scene, camera, width, height, samples=samples, seed=1,
+                     tone_map=tone_map, saturation=saturation, vignette=vignette,
+                     bloom=bloom, grain=grain, chromatic=chromatic)
         uint8 = (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
         pil = Image.fromarray(uint8)
         buf = io.BytesIO()

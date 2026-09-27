@@ -14,10 +14,12 @@ from flask_cors import CORS
 import numpy as np
 from PIL import Image
 
-from tracer import Camera, Scene, render
+from tracer import Camera, Scene, render, focus_camera
 from bubbles import Bubble
 from cuda_tracer import gpu_available, render_gpu
-from spectrum import apply_tone_map
+from spectrum import (
+    apply_tone_map, apply_vignette, apply_bloom, apply_grain, apply_chromatic_aberration,
+)
 
 app = Flask(__name__)
 CORS(app)
@@ -36,14 +38,32 @@ def _build_scene_camera(data: dict):
     swirl = float(data.get("swirl", 1.0))
     sun_power = float(data.get("sun_power", 1.0))
     rim_power = float(data.get("rim_power", 0.6))
+    sun_azimuth = data.get("sun_azimuth")
+    sun_elevation = data.get("sun_elevation")
+    rim_azimuth = data.get("rim_azimuth")
+    rim_elevation = data.get("rim_elevation")
+    sun_color = data.get("sun_color")
+    rim_color = data.get("rim_color")
+    sun_disc = float(data.get("sun_disc", 0.0))
     ground_gloss = float(data.get("ground_gloss", 0.0))
     ground_refl = float(data.get("ground_refl", 0.0))
+    ground_rough = float(data.get("ground_rough", 0.0))
     exposure = float(data.get("exposure", 1.0))
     tone_map = data.get("tone_map", "linear")
     saturation = float(data.get("saturation", 1.0))
+    vignette = float(data.get("vignette", 0.0))
+    bloom = float(data.get("bloom", 0.0))
+    grain = float(data.get("grain", 0.0))
+    chromatic = float(data.get("chromatic", 0.0))
     aperture = float(data.get("aperture", 0.0))
     camera_dist = float(data.get("camera_dist", 6.0))
+    auto_focus = bool(data.get("auto_focus", False))
     fov = float(data.get("fov", 50.0)) if three else float(data.get("fov", 45.0))
+
+    if sun_color is not None:
+        sun_color = np.array(sun_color, dtype=np.float32) / 255.0 if max(sun_color) > 1.0 else np.array(sun_color, dtype=np.float32)
+    if rim_color is not None:
+        rim_color = np.array(rim_color, dtype=np.float32) / 255.0 if max(rim_color) > 1.0 else np.array(rim_color, dtype=np.float32)
 
     common = dict(
         base_thickness_nm=film_thickness,
@@ -74,16 +94,28 @@ def _build_scene_camera(data: dict):
             focus_dist=camera_dist,
         )
 
+    if auto_focus:
+        temp_scene = Scene(bubbles=bubbles, background=background, sun_power=sun_power, rim_power=rim_power)
+        camera.focus_distance = focus_camera(camera, temp_scene)
+
     scene = Scene(
         bubbles=bubbles,
         background=background,
         sun_power=sun_power,
         rim_power=rim_power,
+        sun_azimuth=sun_azimuth,
+        sun_elevation=sun_elevation,
+        rim_azimuth=rim_azimuth,
+        rim_elevation=rim_elevation,
+        sun_color=sun_color,
+        rim_color=rim_color,
+        sun_disc=sun_disc,
         ground_gloss=ground_gloss,
         ground_reflectivity=ground_refl,
+        ground_roughness=ground_rough,
         exposure=exposure,
     )
-    return scene, camera, width, height, samples, tone_map, saturation
+    return scene, camera, width, height, samples, tone_map, saturation, vignette, bloom, grain, chromatic
 
 
 @app.route("/health")
@@ -97,27 +129,21 @@ def render_route():
         return "", 204
 
     data = request.get_json(force=True) or {}
-    scene, camera, width, height, samples, tone_map, saturation = _build_scene_camera(data)
+    scene, camera, width, height, samples, tone_map, saturation, vignette, bloom, grain, chromatic = _build_scene_camera(data)
 
     t0 = time.time()
     if gpu_available():
-        arr = render_gpu(scene, camera, width, height, samples=samples, seed=1, out_path="/tmp/raybubbles_gpu.png")
+        arr = render_gpu(scene, camera, width, height, samples=samples, seed=1, out_path="/tmp/raybubbles_gpu.png",
+                         tone_map=tone_map, saturation=saturation, vignette=vignette,
+                         bloom=bloom, grain=grain, chromatic=chromatic)
         pil = Image.fromarray(arr)
     else:
-        img = render(scene, camera, width, height, samples=samples, seed=1, tone_map=tone_map, saturation=saturation)
+        img = render(scene, camera, width, height, samples=samples, seed=1,
+                     tone_map=tone_map, saturation=saturation, vignette=vignette,
+                     bloom=bloom, grain=grain, chromatic=chromatic)
         uint8 = (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
         pil = Image.fromarray(uint8)
     elapsed = time.time() - t0
-
-    # Apply tone-map / saturation to GPU output on the host so it matches CPU options.
-    if gpu_available():
-        rgb = np.array(pil).astype(np.float32) / 255.0
-        rgb = apply_tone_map(rgb, mode=tone_map)
-        if saturation != 1.0:
-            grey = np.mean(rgb, axis=-1, keepdims=True)
-            rgb = np.clip(grey + (rgb - grey) * saturation, 0.0, 1.0)
-        uint8 = (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
-        pil = Image.fromarray(uint8)
 
     buf = io.BytesIO()
     pil.save(buf, format="PNG")
